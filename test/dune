@@ -1,2 +1,8 @@
 (test
- (name test_proover))
+ (name parser_test)
+ (libraries proover alcotest))
+
+(test
+ (name prover_test)
+ (libraries proover alcotest))
+
