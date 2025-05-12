@@ -2,3 +2,6 @@
  (public_name proover)
  (name main)
  (libraries proover))
+
+(cram
+ (deps ./main.exe))

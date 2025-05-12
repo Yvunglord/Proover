@@ -1,26 +1,16 @@
 open Proover.Parser
 open Proover.Prover
 
-let parse_tactic s =
-  match String.sub (String.lowercase_ascii s) 0 2 with
-  | "eq" -> EquivIntro
-  | "in" -> Intros
-  | "no" -> NotIntros
-  | "ax" -> Axiom
-  | "ap" -> Apply
-  | "an" -> AndElim
-  | "co" -> Contradiction
-  | "qe" -> Qed
-  | _ ->
-      Printf.printf "unknown tactic: %s" s;
-      exit 1
-
-let init_proof_state s =
-  match parse_logical_formula s with
-  | Success (f, _) -> { target = f; assumptions = []; remaining_targets = [] }
-  | Fail ->
-      Printf.printf " failed to parse formula\n";
-      exit 1
+let parse_tactic = function
+  | "equiv_intro" | "ei" | "EquivIntro" -> EquivIntro
+  | "intros" | "i" | "Intros" -> Intros
+  | "not_intros" | "ni" | "NotIntros" -> NotIntros
+  | "axiom" | "a" | "Axiom" -> Axiom
+  | "apply" | "ap" | "Apply" -> Apply
+  | "and_elim" | "ae" | "AndElim" -> AndElim
+  | "contradiction" | "c" | "Contradiction" -> Contradiction
+  | "qed" | "q" | "Qed" -> Qed
+  | s -> failwith ("Unknown tactic: " ^ s)
 
 let rec string_of_logical_formula = function
   | Variable v -> v
@@ -35,30 +25,104 @@ let rec string_of_logical_formula = function
       Printf.sprintf "(%s <-> %s)" (string_of_logical_formula f1) (string_of_logical_formula f2)
 
 let print_state state =
-  Printf.printf "target: %s\n" (string_of_logical_formula state.target);
-  Printf.printf "assumptions: %s\n"
-    (String.concat "; " (List.map string_of_logical_formula state.assumptions));
+  print_endline "=== Current state ===";
+  print_endline "Assumptions:";
+  List.iteri (fun i a -> Printf.printf "%d: %s\n" i (string_of_logical_formula a)) state.assumptions;
+  print_endline "\nCurrent target:";
+  print_endline (string_of_logical_formula state.target);
+  if state.remaining_targets <> [] then
+    Printf.printf "\nRemaining targets: %d\n" (List.length state.remaining_targets)
 
-  let remaining_targets_count = List.length state.remaining_targets in
-  if remaining_targets_count > 0 then
-    Printf.printf "n remaining targets: %d\n" remaining_targets_count;
+let run_interactive formula =
+  let rec loop state =
+    print_state state;
+    print_string "> ";
+    match read_line () with
+    | exception End_of_file -> print_endline "Interrupted."; `Incomplete
+    | cmd ->
+        try
+          let tactic = parse_tactic (String.trim cmd) in
+          match apply_tactic state tactic with
+          | Ok new_state -> 
+              if formula_equal new_state.target (Variable "proved") && 
+                 new_state.remaining_targets = [] then
+                `Complete
+              else
+                loop new_state
+          | Error msg -> 
+              print_endline msg;
+              loop state
+        with Failure msg -> 
+          print_endline msg;
+          loop state
+  in
+  
+  let initial_state = {
+    target = formula;
+    assumptions = [];
+    remaining_targets = [];
+  } in
+  
+  match loop initial_state with
+  | `Complete -> print_endline "Proof completed!"; 0
+  | `Incomplete -> print_endline "Proof incomplete."; 1
 
-  print_newline ()
+let run_from_file formula filename =
+  let tactics = ref [] in
+  let chan = open_in filename in
+  try
+    while true do
+      let line = input_line chan in
+      if line <> "" && line.[0] <> '#' then
+        tactics := parse_tactic (String.trim line) :: !tactics
+    done;
+    0
+  with
+  | End_of_file -> 
+      close_in chan;
+      let tactics = List.rev !tactics in
+      let rec apply_tactics state = function
+        | [] -> state
+        | tactic :: rest ->
+            match apply_tactic state tactic with
+            | Ok new_state -> apply_tactics new_state rest
+            | Error msg -> 
+                Printf.printf "Error applying tactic: %s\n" msg;
+                state
+      in
+      
+      let initial_state = {
+        target = formula;
+        assumptions = [];
+        remaining_targets = [];
+      } in
+      
+      let final_state = apply_tactics initial_state tactics in
+      
+      print_endline "=== Final state ===";
+      print_state final_state;
+      
+      if formula_equal final_state.target (Variable "proved") && 
+         final_state.remaining_targets = [] then
+        (print_endline "Proof completed!"; 0)
+      else
+        (print_endline "Proof incomplete."; 1)
+  | e -> 
+      close_in chan;
+      print_endline ("Error reading file: " ^ Printexc.to_string e);
+      1
 
-let rec proof_loop state =
-  print_state state;
-  Printf.printf "> ";
-  let input = read_line () in
-  match String.trim input with
-  | "" -> proof_loop state
-  | tactic_str -> (
-      let tactic = parse_tactic tactic_str in
-      match apply_tactic state tactic with
-      | Ok new_state -> (
-          match tactic with
-          | Contradiction | Axiom -> proof_loop new_state
-          | Qed -> Printf.printf "proof completed\n"
-          | _ -> proof_loop new_state)
-      | Error message -> Printf.printf "error: %s\n\n" message)
-
-let () = proof_loop (init_proof_state Sys.argv.(1))
+let () =
+  if Array.length Sys.argv < 2 then
+    (print_endline "Usage: ./prover <formula> [<tactics-file>]"; exit 1)
+  else
+    let formula = 
+      match parse_logical_formula Sys.argv.(1) with
+      | Success (f, _) -> f
+      | Fail -> failwith "Failed to parse formula"
+    in
+    
+    if Array.length Sys.argv = 2 then
+      exit (run_interactive formula)
+    else
+      exit (run_from_file formula Sys.argv.(2))
